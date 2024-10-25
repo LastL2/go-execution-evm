@@ -1,0 +1,94 @@
+syntax = "proto3";
+
+package execution.v1;
+
+option go_package = "github.com/rollkit/go-execution-evm/proto/v1;executionv1";
+
+import "google/protobuf/empty.proto";
+
+// --------------------
+// Structures
+// --------------------
+
+// ExecutionPayloadV1 maps to the ExecutionPayload structure of the beacon chain spec.
+message ExecutionPayloadV1 {
+    bytes parent_hash = 1;           // 32 Bytes
+    bytes fee_recipient = 2;         // 20 Bytes
+    bytes state_root = 3;            // 32 Bytes
+    bytes receipts_root = 4;         // 32 Bytes
+    bytes logs_bloom = 5;            // 256 Bytes
+    bytes prev_randao = 6;           // 32 Bytes
+    uint64 block_number = 7;         // 64 Bits
+    uint64 gas_limit = 8;            // 64 Bits
+    uint64 gas_used = 9;             // 64 Bits
+    uint64 timestamp = 10;           // 64 Bits
+    bytes extra_data = 11;           // 0 to 32 Bytes
+    bytes base_fee_per_gas = 12;     // 256 Bits
+    bytes block_hash = 13;           // 32 Bytes
+    repeated bytes transactions = 14; // Array of transaction bytes
+}
+
+// ForkchoiceStateV1 encapsulates the fork choice state.
+message ForkchoiceStateV1 {
+    bytes head_block_hash = 1;          // 32 Bytes
+    bytes safe_block_hash = 2;          // 32 Bytes
+    bytes finalized_block_hash = 3;     // 32 Bytes
+}
+
+// PayloadAttributesV1 contains attributes required to initiate a payload build process.
+message PayloadAttributesV1 {
+    uint64 timestamp = 1;                // 64 Bits
+    bytes prev_randao = 2;               // 32 Bytes
+    bytes suggested_fee_recipient = 3;   // 20 Bytes
+}
+
+// PayloadStatusV1 contains the result of processing a payload.
+message PayloadStatusV1 {
+    enum Status {
+        VALID = 0;
+        INVALID = 1;
+        SYNCING = 2;
+        ACCEPTED = 3;
+        INVALID_BLOCK_HASH = 4;
+    }
+    Status status = 1;
+    bytes latest_valid_hash = 2;          // 32 Bytes or 0x00...00
+    string validation_error = 3;         // Nullable string
+}
+
+// ForkchoiceUpdatedResponseV1 is the response for engine_forkchoiceUpdatedV1.
+message ForkchoiceUpdatedResponseV1 {
+    PayloadStatusV1 payload_status = 1;
+    bytes payload_id = 2; // 8 Bytes or null
+}
+
+// GetPayloadRequestV1 is the request for engine_getPayloadV1.
+message GetPayloadRequestV1 {
+    bytes payload_id = 1; // 8 Bytes
+}
+
+// ForkchoiceUpdatedRequestV1 is the request for engine_forkchoiceUpdatedV1.
+message ForkchoiceUpdatedRequestV1 {
+    ForkchoiceStateV1 forkchoice_state = 1;
+    oneof payload_attributes {
+        PayloadAttributesV1 payload_attributes_data = 2;
+        google.protobuf.Empty empty = 3;
+    }
+}
+
+// --------------------
+// Service Definition
+// --------------------
+
+service ExecutionService {
+    // engine_newPayloadV1 RPC method.
+    rpc engine_newPayloadV1 (ExecutionPayloadV1) returns (PayloadStatusV1);
+
+    // engine_forkchoiceUpdatedV1 RPC method.
+    rpc engine_forkchoiceUpdatedV1 (ForkchoiceUpdatedRequestV1) returns (ForkchoiceUpdatedResponseV1);
+
+    // engine_getPayloadV1 RPC method.
+    rpc engine_getPayloadV1 (GetPayloadRequestV1) returns (ExecutionPayloadV1);
+
+    // engine_exchangeTransitionConfigurationV1 RPC method.
+}

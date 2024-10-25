@@ -1,0 +1,11 @@
+# Binaries
+/bin/
+/pkg/execution/execution.pb.go
+/pkg/execution/execution_grpc.pb.go
+
+# IDEs
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
