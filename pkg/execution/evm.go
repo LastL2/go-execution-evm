@@ -1,138 +1,72 @@
 package execution
 
 import (
-	"context"
 	"fmt"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/metadata"
+	"github.com/LastL2/go-execution"
+	"github.com/ethereum/go-ethereum/common"
+	"time"
 
-	executionv1 "github.com/rollkit/go-execution-evm/proto/v1"
-	"google.golang.org/grpc"
+	"github.com/rollkit/go-execution-evm/pkg/client"
+	rollkitTypes "github.com/rollkit/rollkit/types"
 	"google.golang.org/grpc/status"
 )
 
-// EVMExecution implements the ExecutionServiceClient interface using the Engine API.
+// EVMExecution implements the Execute interface using the Engine API.
 type EVMExecution struct {
-	client executionv1.ExecutionServiceClient
-	conn   *grpc.ClientConn // Optional: To manage connection lifecycle
+	client execution.Execute
 }
 
-func authInterceptor(token string) grpc.UnaryClientInterceptor {
-	return func(
-		ctx context.Context,
-		method string,
-		req interface{},
-		reply interface{},
-		cc *grpc.ClientConn,
-		invoker grpc.UnaryInvoker,
-		opts ...grpc.CallOption,
-	) error {
-		// Inject the Authorization header into the outgoing context
-		ctx = metadata.AppendToOutgoingContext(ctx, "Authorization", fmt.Sprintf("Bearer %s", token))
-		return invoker(ctx, method, req, reply, cc, opts...)
-	}
-}
-
-// loadTLSCredentials loads the client-side TLS credentials from file.
-func loadTLSCredentials() (credentials.TransportCredentials, error) {
-	// Load the client certificates from disk
-	// Adjust the path and parameters as necessary
-	creds, err := credentials.NewClientTLSFromFile("path/to/cert.pem", "")
-	if err != nil {
-		return nil, fmt.Errorf("cannot load TLS credentials: %v", err)
-	}
-	return creds, nil
-}
-
-// NewEVMExecution creates a new EVMExecution instance by establishing a gRPC connection.
-// Use this constructor for production usage.
-func NewEVMExecution(evmEndpoint string) (*EVMExecution, error) {
-	// Establish a gRPC connection. Consider using secure connections (with TLS) in production.
-	// Load TLS credentials
-	//creds, err := loadTLSCredentials()
-	//if err != nil {
-	//	return nil, err
-	//}
-	//
-	//// Create a new gRPC connection with TLS and the authorization interceptor
-	//conn, err := grpc.Dial(
-	//	evmEndpoint,
-	//	grpc.WithTransportCredentials(creds),
-	//	grpc.WithUnaryInterceptor(authInterceptor(token)),
-	//)
-	conn, err := grpc.NewClient(evmEndpoint, grpc.WithInsecure(), grpc.WithUnaryInterceptor(authInterceptor("c28b9140f7d8797821306c7a4fd611f20f3963238b13d624359ec0a45c24c315")))
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to EVM endpoint: %w", err)
-	}
-
-	// Create a new ExecutionServiceClient from the connection.
-	evmClient := executionv1.NewExecutionServiceClient(conn)
-
-	return &EVMExecution{
-		client: evmClient,
-		conn:   conn,
-	}, nil
-}
-
-// NewEVMExecutionWithClient creates a new EVMExecution instance with an existing ExecutionServiceClient.
-// Use this constructor for testing with mocks.
-func NewEVMExecutionWithClient(client executionv1.ExecutionServiceClient) *EVMExecution {
+func NewEVMExecutionWithClient(client execution.Execute) *EVMExecution {
 	return &EVMExecution{
 		client: client,
 	}
 }
 
-// Close gracefully closes the gRPC connection if it exists.
-// It's good practice to call this method when shutting down your application.
-func (e EVMExecution) Close() error {
-	if e.conn != nil {
-		return e.conn.Close()
+func NewEVMExecution(ethURL string, engineURL string) *EVMExecution {
+	ethClient, err := client.NewEngineAPIExecutionClient(ethURL, engineURL, common.Hash{}, common.Address{})
+	if err != nil {
+		println(err.Error())
+		return nil
 	}
-	return nil
+	return &EVMExecution{
+		client: ethClient,
+	}
 }
 
 // InitChain initializes the blockchain using the Engine API's forkchoiceUpdated method.
-func (e EVMExecution) InitChain(ctx context.Context, req *executionv1.ForkchoiceUpdatedRequestV1) (*executionv1.ForkchoiceUpdatedResponseV1, error) {
-	resp, err := e.client.EngineForkchoiceUpdatedV1(ctx, req)
+func (e EVMExecution) InitChain(genesisTime time.Time, initialHeight uint64, chainID string) (stateRoot rollkitTypes.Hash, maxBytes uint64, err error) {
+	stateRoot, gasLimit, err := e.client.InitChain(genesisTime, initialHeight, chainID)
 	if err != nil {
 		st, _ := status.FromError(err)
-		return nil, fmt.Errorf("forkchoiceUpdated RPC failed: %s", st.Message())
+		return rollkitTypes.Hash{}, uint64(0), fmt.Errorf("forkchoiceUpdated RPC failed: %s", st.Message())
 	}
-
-	return resp, nil
+	return stateRoot, gasLimit, nil
 }
 
-// GetTxs retrieves transactions from the mempool.
-// Since there's no direct API, this method can be a stub or integrate with your mempool management.
-func (e EVMExecution) GetTxs(ctx context.Context) ([]byte, error) {
-	// Stub implementation. Replace with actual mempool integration.
-	return nil, nil
+// GetTxs retrieves all available transactions from the execution client's mempool.
+func (e EVMExecution) GetTxs() ([]rollkitTypes.Tx, error) {
+	txs, err := e.client.GetTxs()
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve transactions: %w", err)
+	}
+	return txs, nil
 }
 
-// ExecuteTxs executes transactions by calling the Engine API's newPayload and getPayload methods.
-func (e EVMExecution) ExecuteTxs(ctx context.Context, req *executionv1.ExecutionPayloadV1) (*executionv1.PayloadStatusV1, error) {
-	// Call engine_newPayloadV1
-	statusResp, err := e.client.EngineNewPayloadV1(ctx, req)
+// ExecuteTxs executes a set of transactions to produce a new block header.
+func (e EVMExecution) ExecuteTxs(txs []rollkitTypes.Tx, blockHeight uint64, timestamp time.Time, prevStateRoot rollkitTypes.Hash) (updatedStateRoot rollkitTypes.Hash, maxBytes uint64, err error) {
+	updatedStateRoot, maxBytes, err = e.client.ExecuteTxs(txs, blockHeight, timestamp, prevStateRoot)
 	if err != nil {
 		st, _ := status.FromError(err)
-		return nil, fmt.Errorf("newPayload RPC failed: %s", st.Message())
+		return rollkitTypes.Hash{}, uint64(0), fmt.Errorf("execution failed: %s", st.Message())
 	}
-
-	// Optionally, call engine_getPayloadV1 if needed
-	// payloadReq := &executionv1.GetPayloadRequestV1{PayloadId: ...}
-	// payloadResp, err := e.client.EngineGetPayloadV1(ctx, payloadReq)
-	// Handle response as needed
-
-	return statusResp, nil
+	return updatedStateRoot, maxBytes, nil
 }
 
-// SetFinal marks a block as final using the Engine API's forkchoiceUpdated method.
-func (e EVMExecution) SetFinal(ctx context.Context, req *executionv1.ForkchoiceUpdatedRequestV1) (*executionv1.ForkchoiceUpdatedResponseV1, error) {
-	resp, err := e.client.EngineForkchoiceUpdatedV1(ctx, req)
-	if err != nil {
+// SetFinal marks a block at the given height as final.
+func (e EVMExecution) SetFinal(blockHeight uint64) error {
+	if err := e.client.SetFinal(blockHeight); err != nil {
 		st, _ := status.FromError(err)
-		return nil, fmt.Errorf("forkchoiceUpdated RPC failed: %s", st.Message())
+		return fmt.Errorf("failed to mark block as final: %s", st.Message())
 	}
-
-	return resp, nil
+	return nil
 }

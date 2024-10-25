@@ -1,187 +1,138 @@
 package execution
 
 import (
-	"context"
 	"testing"
+	"time"
 
-	executionv1 "github.com/rollkit/go-execution-evm/proto/v1"
+	"github.com/rollkit/rollkit/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
-	"google.golang.org/grpc"
 )
 
-// MockEVMClient mocks the ExecutionServiceClient interface for testing.
-type MockEVMClient struct {
+// MockEngineAPIExecutionClient is a mock for the EngineAPIExecutionClient.
+type MockEngineAPIExecutionClient struct {
 	mock.Mock
 }
 
-// EngineNewPayloadV1 mocks the engine_newPayloadV1 RPC method.
-func (m *MockEVMClient) EngineNewPayloadV1(ctx context.Context, req *executionv1.ExecutionPayloadV1, opts ...grpc.CallOption) (*executionv1.PayloadStatusV1, error) {
-	args := m.Called(ctx, req)
-	return args.Get(0).(*executionv1.PayloadStatusV1), args.Error(1)
+func (m *MockEngineAPIExecutionClient) InitChain(genesisTime time.Time, initialHeight uint64, chainID string) (types.Hash, uint64, error) {
+	args := m.Called(genesisTime, initialHeight, chainID)
+	return args.Get(0).(types.Hash), args.Get(1).(uint64), args.Error(2)
 }
 
-// EngineForkchoiceUpdatedV1 mocks the engine_forkchoiceUpdatedV1 RPC method.
-func (m *MockEVMClient) EngineForkchoiceUpdatedV1(ctx context.Context, req *executionv1.ForkchoiceUpdatedRequestV1, opts ...grpc.CallOption) (*executionv1.ForkchoiceUpdatedResponseV1, error) {
-	args := m.Called(ctx, req)
-	return args.Get(0).(*executionv1.ForkchoiceUpdatedResponseV1), args.Error(1)
+func (m *MockEngineAPIExecutionClient) GetTxs() ([]types.Tx, error) {
+	args := m.Called()
+	return args.Get(0).([]types.Tx), args.Error(1)
 }
 
-// EngineGetPayloadV1 mocks the engine_getPayloadV1 RPC method.
-func (m *MockEVMClient) EngineGetPayloadV1(ctx context.Context, req *executionv1.GetPayloadRequestV1, opts ...grpc.CallOption) (*executionv1.ExecutionPayloadV1, error) {
-	args := m.Called(ctx, req)
-	return args.Get(0).(*executionv1.ExecutionPayloadV1), args.Error(1)
+func (m *MockEngineAPIExecutionClient) ExecuteTxs(txs []types.Tx, blockHeight uint64, timestamp time.Time, prevStateRoot types.Hash) (types.Hash, uint64, error) {
+	args := m.Called(txs, blockHeight, timestamp, prevStateRoot)
+	return args.Get(0).(types.Hash), args.Get(1).(uint64), args.Error(2)
 }
 
-// mustEmbedUnimplementedExecutionServiceClient is required to satisfy the ExecutionServiceClient interface.
-func (m *MockEVMClient) mustEmbedUnimplementedExecutionServiceClient() {}
+func (m *MockEngineAPIExecutionClient) SetFinal(blockHeight uint64) error {
+	args := m.Called(blockHeight)
+	return args.Error(0)
+}
 
-// --------------------
-// Test Cases
-// --------------------
-
-// TestEVMExecution_InitChain tests the InitChain method of EVMExecution.
 func TestEVMExecution_InitChain(t *testing.T) {
-	mockClient := new(MockEVMClient)
+	mockClient := new(MockEngineAPIExecutionClient)
+	genesisTime := time.Now()
+	initialHeight := uint64(1)
+	chainID := "test-chain"
+	expectedStateRoot := types.Hash{0xde, 0xad, 0xbe, 0xef}
+	maxBytes := uint64(1000000)
 
-	// Define the expected request and response.
-	req := &executionv1.ForkchoiceUpdatedRequestV1{
-		ForkchoiceState: &executionv1.ForkchoiceStateV1{
-			HeadBlockHash:      []byte("0xheadblockhash"),
-			SafeBlockHash:      []byte("0xsafeblockhash"),
-			FinalizedBlockHash: []byte("0xfinalizedblockhash"),
-		},
-		PayloadAttributes: &executionv1.ForkchoiceUpdatedRequestV1_PayloadAttributesData{
-			PayloadAttributesData: &executionv1.PayloadAttributesV1{
-				Timestamp:             1700851200,
-				PrevRandao:            []byte("0xprevrandao"),
-				SuggestedFeeRecipient: []byte("0xsuggestedfeerecipient"),
-			},
-		},
-	}
+	// Set up the mock expectations
+	mockClient.On("InitChain", genesisTime, initialHeight, chainID).Return(expectedStateRoot, maxBytes, nil)
 
-	expectedResp := &executionv1.ForkchoiceUpdatedResponseV1{
-		PayloadStatus: &executionv1.PayloadStatusV1{
-			Status:          executionv1.PayloadStatusV1_VALID,
-			LatestValidHash: []byte("0xdummyvalidhash"),
-			ValidationError: "",
-		},
-		PayloadId: []byte("payloadid1"),
-	}
-
-	// Set up expectations.
-	mockClient.On("EngineForkchoiceUpdatedV1", mock.Anything, req).Return(expectedResp, nil)
-
-	// Initialize EVMExecution with the mock client.
-	evmExec, _ := NewEVMExecution("0.0.0.0:8551")
-
-	// Call the InitChain method.
-	resp, err := evmExec.InitChain(context.Background(), req)
-
-	// Assertions.
-	assert.NoError(t, err)
-	assert.Equal(t, expectedResp.PayloadStatus, resp.PayloadStatus)
-	assert.Equal(t, expectedResp.PayloadId, resp.PayloadId)
-
-	// Assert that the expectations were met.
-	mockClient.AssertExpectations(t)
-}
-
-// TestEVMExecution_ExecuteTxs tests the ExecuteTxs method of EVMExecution.
-func TestEVMExecution_ExecuteTxs(t *testing.T) {
-	mockClient := new(MockEVMClient)
-
-	// Define the expected request and response.
-	req := &executionv1.ExecutionPayloadV1{
-		ParentHash:    []byte("0xparenthash"),
-		FeeRecipient:  []byte("0xfeerecipient"),
-		StateRoot:     []byte("0xstateroot"),
-		ReceiptsRoot:  []byte("0xreceiptsroot"),
-		LogsBloom:     []byte("0xlogsbloom"),
-		PrevRandao:    []byte("0xprevrandao"),
-		BlockNumber:   1,
-		GasLimit:      1000000,
-		GasUsed:       900000,
-		Timestamp:     1700851200,
-		ExtraData:     []byte("0xextradata"),
-		BaseFeePerGas: []byte("0xbasefeepergas"),
-		BlockHash:     []byte("0xblockhash"),
-		Transactions:  [][]byte{[]byte("tx1"), []byte("tx2")},
-	}
-
-	expectedStatusResp := &executionv1.PayloadStatusV1{
-		Status:          executionv1.PayloadStatusV1_VALID,
-		LatestValidHash: []byte("0xdummyvalidhash"),
-		ValidationError: "",
-	}
-
-	// Set up expectations.
-	mockClient.On("EngineNewPayloadV1", mock.Anything, req).Return(expectedStatusResp, nil)
-
-	// Initialize EVMExecution with the mock client.
 	evmExec := NewEVMExecutionWithClient(mockClient)
+	stateRoot, resultMaxBytes, err := evmExec.InitChain(genesisTime, initialHeight, chainID)
 
-	// Call the ExecuteTxs method.
-	resp, err := evmExec.ExecuteTxs(context.Background(), req)
-
-	// Assertions.
+	// Assertions
 	assert.NoError(t, err)
-	assert.Equal(t, expectedStatusResp, resp)
-
-	// Assert that the expectations were met.
+	assert.Equal(t, expectedStateRoot, stateRoot)
+	assert.Equal(t, maxBytes, resultMaxBytes)
 	mockClient.AssertExpectations(t)
 }
 
-// TestEVMExecution_GetTxs tests the GetTxs method of EVMExecution.
-// Since there's no direct API, this is a stub test.
 func TestEVMExecution_GetTxs(t *testing.T) {
-	evmExec := NewEVMExecutionWithClient(nil) // Pass nil or implement a mock if necessary
+	mockClient := new(MockEngineAPIExecutionClient)
+	expectedTxs := []types.Tx{[]byte("tx1"), []byte("tx2")}
 
-	// Call the GetTxs method.
-	resp, err := evmExec.GetTxs(context.Background())
+	// Set up the mock expectations
+	mockClient.On("GetTxs").Return(expectedTxs, nil)
 
-	// Assertions.
+	evmExec := NewEVMExecutionWithClient(mockClient)
+	txs, err := evmExec.GetTxs()
+
+	// Assertions
 	assert.NoError(t, err)
-	assert.Nil(t, resp) // Since it's a stub
+	assert.Equal(t, expectedTxs, txs)
+	mockClient.AssertExpectations(t)
 }
 
-// TestEVMExecution_SetFinal tests the SetFinal method of EVMExecution.
-func TestEVMExecution_SetFinal(t *testing.T) {
-	mockClient := new(MockEVMClient)
+func TestEVMExecution_ExecuteTxs(t *testing.T) {
+	mockClient := new(MockEngineAPIExecutionClient)
+	txs := []types.Tx{[]byte("tx1"), []byte("tx2")}
+	blockHeight := uint64(1)
+	timestamp := time.Now()
+	prevStateRoot := types.Hash{0xca, 0xfe, 0xba, 0xbe}
+	expectedStateRoot := types.Hash{0xde, 0xad, 0xbe, 0xef}
+	maxBytes := uint64(1000000)
 
-	// Define the expected request and response.
-	req := &executionv1.ForkchoiceUpdatedRequestV1{
-		ForkchoiceState: &executionv1.ForkchoiceStateV1{
-			HeadBlockHash:      []byte("0xheadblockhash"),
-			SafeBlockHash:      []byte("0xsafeblockhash"),
-			FinalizedBlockHash: []byte("0xfinalizedblockhash"),
-		},
-		PayloadAttributes: nil, // Assuming no new payload attributes
-	}
+	// Set up the mock expectations
+	mockClient.On("ExecuteTxs", txs, blockHeight, timestamp, prevStateRoot).Return(expectedStateRoot, maxBytes, nil)
 
-	expectedResp := &executionv1.ForkchoiceUpdatedResponseV1{
-		PayloadStatus: &executionv1.PayloadStatusV1{
-			Status:          executionv1.PayloadStatusV1_INVALID,
-			LatestValidHash: []byte("0xdummyvalidhash"),
-			ValidationError: "Invalid fork choice",
-		},
-		PayloadId: nil,
-	}
-
-	// Set up expectations.
-	mockClient.On("EngineForkchoiceUpdatedV1", mock.Anything, req).Return(expectedResp, nil)
-
-	// Initialize EVMExecution with the mock client.
 	evmExec := NewEVMExecutionWithClient(mockClient)
+	updatedStateRoot, resultMaxBytes, err := evmExec.ExecuteTxs(txs, blockHeight, timestamp, prevStateRoot)
 
-	// Call the SetFinal method.
-	resp, err := evmExec.SetFinal(context.Background(), req)
-
-	// Assertions.
+	// Assertions
 	assert.NoError(t, err)
-	assert.Equal(t, expectedResp.PayloadStatus, resp.PayloadStatus)
-	assert.Nil(t, resp.PayloadId)
-
-	// Assert that the expectations were met.
+	assert.Equal(t, expectedStateRoot, updatedStateRoot)
+	assert.Equal(t, maxBytes, resultMaxBytes)
 	mockClient.AssertExpectations(t)
+}
+
+func TestEVMExecution_SetFinal(t *testing.T) {
+	mockClient := new(MockEngineAPIExecutionClient)
+	blockHeight := uint64(1)
+
+	// Set up the mock expectations
+	mockClient.On("SetFinal", blockHeight).Return(nil)
+
+	evmExec := NewEVMExecutionWithClient(mockClient)
+	err := evmExec.SetFinal(blockHeight)
+
+	// Assertions
+	assert.NoError(t, err)
+	mockClient.AssertExpectations(t)
+}
+
+func TestEVMExecution_InitChainIntegration(t *testing.T) {
+	// Get node URLs from environment variables.
+	ethURL := "http://localhost:8545"
+	engineURL := "http://localhost:8551"
+
+	//if ethURL == "" || engineURL == "" {
+	//	t.Skip("ETH_NODE_URL or ENGINE_NODE_URL is not set, skipping integration test")
+	//}
+
+	// Create an instance of EVMExecution with actual node URLs
+	evmExec := NewEVMExecution(ethURL, engineURL)
+	if evmExec == nil {
+		t.Fatalf("failed to initialize EVMExecution")
+	}
+
+	// Set parameters for InitChain
+	genesisTime := time.Now()
+	initialHeight := uint64(1)
+	chainID := "test-chain"
+
+	// Call InitChain and assert results
+	stateRoot, maxBytes, err := evmExec.InitChain(genesisTime, initialHeight, chainID)
+
+	// Assertions to verify results from the live node
+	assert.NoError(t, err, "InitChain should not return an error")
+	assert.NotEqual(t, types.Hash{}, stateRoot, "stateRoot should not be empty")
+	assert.Greater(t, maxBytes, uint64(0), "maxBytes should be greater than zero")
 }
